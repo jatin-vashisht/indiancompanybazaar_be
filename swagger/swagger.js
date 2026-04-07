@@ -6,18 +6,18 @@ const options = {
   definition: {
     openapi: "3.0.0",
     info: {
-      title: "Indian Company Bazaar API",
+      title: "Kahem India API",
       version: "1.0.0",
-      description: "API documentation for Indian Company Bazaar project",
+      description: "API documentation for Kahem India — India's Trusted Business Marketplace",
     },
     servers: [
       {
-        url: "https://indiancompanybazaar.onrender.com",
-        description: "Production server",
+        url: "https://api.kahemindia.com",
+        description: "Production",
       },
       {
         url: "http://localhost:5000",
-        description: "Local server",
+        description: "Local",
       },
     ],
 

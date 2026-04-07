@@ -1,8 +1,15 @@
 const User = require('../models/User');
 const jwt = require('jsonwebtoken');
 const bcrypt = require("bcryptjs");
-const { Resend } = require("resend");
-const resend = new Resend(process.env.RESEND_API_KEY);
+const nodemailer = require("nodemailer");
+
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.GMAIL_USER,
+    pass: process.env.GMAIL_APP_PASSWORD,
+  },
+});
 
 exports.register = async (req, res) => {
   try {
@@ -22,15 +29,14 @@ exports.register = async (req, res) => {
       verificationToken
     });
 
-    // Send verification email using Resend
     const verifyUrl = `${process.env.BASE_URL}/api/auth/verify/${verificationToken}`;
 
-    await resend.emails.send({
-      from: "IndianCompanyBazar <no-reply@yourdomain.com>",
+    await transporter.sendMail({
+      from: `"Kahem India" <${process.env.GMAIL_USER}>`,
       to: email,
       subject: "Verify your email",
       html: `
-        <h2>Welcome to Indian Company Bazar, ${name}!</h2>
+        <h2>Welcome to Kahem India, ${name}!</h2>
         <p>Click below to verify your email:</p>
         <a href="${verifyUrl}" target="_blank">Verify Email</a>
         <p>This link expires in 24 hours.</p>
@@ -59,13 +65,13 @@ exports.loginUser = async (req, res) => {
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(400).json({ message: "Invalid credentials" });
 
-    const token = jwt.sign({ id: user._id, email: user.email, role: user.role },
-  process.env.JWT_SECRET,
-  { expiresIn: '7d' });
+    const token = jwt.sign(
+      { id: user._id, email: user.email, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: '7d' }
+    );
     res.json({ token });
   } catch (err) {
     res.status(500).json({ message: "Server error" });
   }
 };
-
-
