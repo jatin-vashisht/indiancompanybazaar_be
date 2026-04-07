@@ -33,6 +33,7 @@ const adminRoutes = require('./routes/adminRoutes');
 const orderRoutes = require('./routes/orderRoutes');
 
 const buyerRoutes = require("./routes/buyerRoutes");
+const razorpayRoutes = require("./routes/razorpayRoutes");
 
 
 // Use routes
@@ -41,6 +42,7 @@ app.use('/api/business', businessRoutes);
 app.use('/api/admin',authenticate, authorize('admin'), adminRoutes);
 app.use('/api/orders',authenticate, orderRoutes);
 app.use("/api/buyer",authenticate, buyerRoutes);
+app.use("/api/razorpay", razorpayRoutes);
 
 // ✅ Initialize Swagger properly (only once)
 swaggerDocs(app);
