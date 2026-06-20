@@ -89,7 +89,9 @@ const businessListingSchema = new mongoose.Schema(
     },
     description: { type: String },
 
-    
+    // Listing-form details (shown on the Browse Companies card)
+    stakePercentage: { type: Number },
+    closureTimeline: { type: String },
 
     verified: {
     type: Boolean,

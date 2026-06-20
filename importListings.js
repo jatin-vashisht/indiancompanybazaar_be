@@ -68,6 +68,8 @@ async function main() {
       paidUpCapital: c.paidupCapital ?? undefined,
       dateOfIncorporation: c.registrationDate ? new Date(c.registrationDate) : undefined,
       companyStatus: c.companyStatus || "Active",
+      stakePercentage: item.stake,
+      closureTimeline: item.timeline,
       description:
         `${item.stake}% stake available for sale. ` +
         `Expected closure timeline: ${item.timeline}. ` +
