@@ -257,8 +257,7 @@ const deleteBusiness = async (req, res) => {
 const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 // Map a Company document to the exact keys the frontend ("All Companies"
-// tab) expects, including the legacy BOM-prefixed "CIN" key. Extra fields
-// are included too for richer detail views; the current UI ignores them.
+// tab) expects, including the legacy BOM-prefixed "CIN" key.
 const toFrontendShape = (c) => ({
   "﻿CIN": c.cin || "",
   "Company Name": c.companyName || "",
@@ -267,16 +266,6 @@ const toFrontendShape = (c) => ({
   "Company Status": c.companyStatus || "",
   "Company Industrial Classification": c.industrialClassification || "",
   "Company State Code": c.stateCode || "",
-  // Extra fields from the ROC dataset (available for future UI):
-  rocCode: c.rocCode || "",
-  category: c.category || "",
-  subCategory: c.subCategory || "",
-  companyClass: c.companyClass || "",
-  authorizedCapital: c.authorizedCapital ?? null,
-  paidupCapital: c.paidupCapital ?? null,
-  registeredOfficeAddress: c.registeredOfficeAddress || "",
-  listingStatus: c.listingStatus || "",
-  indianForeign: c.indianForeign || "",
 });
 
 const getCSVCompanies = async (req, res) => {
@@ -296,8 +285,10 @@ const getCSVCompanies = async (req, res) => {
 
     const totalPages = Math.ceil(total / limit);
 
+    // Sort by _id (default index) — there is no companyName index on the
+    // free tier, and sorting on an unindexed field over ~1M docs would fail.
     const docs = await Company.find(filter)
-      .sort({ companyName: 1 })
+      .sort({ _id: 1 })
       .skip((page - 1) * limit)
       .limit(limit)
       .lean();

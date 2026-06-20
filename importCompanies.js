@@ -26,35 +26,34 @@ const Company = require("./models/Company");
 const DATA_DIR =
   process.env.DATA_DIR || path.join(os.homedir(), "Desktop", "personal", "icb_data");
 const BATCH_SIZE = parseInt(process.env.BATCH_SIZE || "2000", 10);
+// Stop before the free Atlas tier's 512MB ceiling so a re-run can never
+// block writes on the production cluster. Measured as logical dataSize +
+// indexSize (what Atlas counts toward the quota).
+const MAX_LOGICAL_MB = parseInt(process.env.MAX_LOGICAL_MB || "480", 10);
 
-const toNumber = (v) => {
-  if (v === undefined || v === null || String(v).trim() === "") return undefined;
-  const n = parseFloat(String(v).replace(/,/g, ""));
-  return Number.isFinite(n) ? n : undefined;
-};
 const clean = (v) => (v === undefined || v === null ? undefined : String(v).trim() || undefined);
 
-// Map one CSV row (headers BOM-stripped + trimmed) to a Company document.
+// SLIM mapping: only the fields the "All Companies" UI renders, to fit the
+// full ~1M-row dataset inside the free Atlas tier.
 function mapRow(row) {
   return {
     cin: clean(row["CIN"]),
     companyName: clean(row["CompanyName"]),
-    rocCode: clean(row["CompanyROCcode"]),
-    category: clean(row["CompanyCategory"]),
-    subCategory: clean(row["CompanySubCategory"]),
-    companyClass: clean(row["CompanyClass"]),
-    authorizedCapital: toNumber(row["AuthorizedCapital"]),
-    paidupCapital: toNumber(row["PaidupCapital"]),
-    registrationDate: clean(row["CompanyRegistrationdate_date"]),
-    registeredOfficeAddress: clean(row["Registered_Office_Address"]),
-    listingStatus: clean(row["Listingstatus"]),
-    companyStatus: clean(row["CompanyStatus"]),
-    stateCode: clean(row["CompanyStateCode"]),
-    indianForeign: clean(row["CompanyIndian/Foreign Company"]),
     nicCode: clean(row["nic_code"]),
+    registrationDate: clean(row["CompanyRegistrationdate_date"]),
+    companyStatus: clean(row["CompanyStatus"]),
     industrialClassification: clean(row["CompanyIndustrialClassification"]),
+    stateCode: clean(row["CompanyStateCode"]),
   };
 }
+
+// Logical storage used (MB), as Atlas counts it toward the quota.
+async function usedMB() {
+  const s = await mongoose.connection.db.stats();
+  return (s.dataSize + s.indexSize) / (1024 * 1024);
+}
+
+class QuotaReached extends Error {}
 
 function importFile(filePath) {
   return new Promise((resolve, reject) => {
@@ -70,14 +69,37 @@ function importFile(filePath) {
       })
     );
 
+    let batchesSinceCheck = 0;
     const flush = async (rows) => {
       if (!rows.length) return;
       await Company.insertMany(rows, { ordered: false });
       inserted += rows.length;
       process.stdout.write(`\r   ${path.basename(filePath)}: ${inserted} rows`);
+      // Every ~20k rows, verify we're still safely under the tier quota.
+      if (++batchesSinceCheck >= 10) {
+        batchesSinceCheck = 0;
+        const mb = await usedMB();
+        if (mb >= MAX_LOGICAL_MB) {
+          throw new QuotaReached(`Storage guard tripped at ${mb.toFixed(0)}MB (limit ${MAX_LOGICAL_MB}MB)`);
+        }
+      }
+    };
+
+    let stopped = false;
+    const fail = (err) => {
+      if (stopped) return;
+      stopped = true;
+      stream.destroy();
+      if (err instanceof QuotaReached) {
+        process.stdout.write("\n");
+        resolve({ inserted, quotaReached: true });
+      } else {
+        reject(err);
+      }
     };
 
     stream.on("data", (row) => {
+      if (stopped) return;
       const doc = mapRow(row);
       if (!doc.cin && !doc.companyName) return; // skip blank/garbage lines
       batch.push(doc);
@@ -87,8 +109,8 @@ function importFile(filePath) {
         stream.pause();
         pending = pending
           .then(() => flush(rows))
-          .then(() => stream.resume())
-          .catch(reject);
+          .then(() => !stopped && stream.resume())
+          .catch(fail);
       }
     });
 
@@ -96,13 +118,14 @@ function importFile(filePath) {
       pending
         .then(() => flush(batch))
         .then(() => {
+          if (stopped) return;
           process.stdout.write("\n");
-          resolve(inserted);
+          resolve({ inserted, quotaReached: false });
         })
-        .catch(reject);
+        .catch(fail);
     });
 
-    stream.on("error", reject);
+    stream.on("error", fail);
   });
 }
 
@@ -128,15 +151,25 @@ async function main() {
 
   console.log(`Importing ${files.length} CSV file(s) from ${DATA_DIR}\n`);
   let grandTotal = 0;
+  let hitQuota = false;
   for (const file of files) {
-    const count = await importFile(file);
-    grandTotal += count;
+    const { inserted, quotaReached } = await importFile(file);
+    grandTotal += inserted;
+    if (quotaReached) {
+      hitQuota = true;
+      break;
+    }
   }
 
-  console.log(`\nEnsuring indexes...`);
-  await Company.syncIndexes();
-
-  console.log(`\n✅ Done. Imported ${grandTotal} companies total.`);
+  const finalMB = await usedMB();
+  if (hitQuota) {
+    console.log(
+      `\n⚠️  Stopped early at the storage guard (${finalMB.toFixed(0)}MB). ` +
+        `Imported ${grandTotal} companies before reaching the free-tier limit.`
+    );
+  } else {
+    console.log(`\n✅ Done. Imported ${grandTotal} companies (${finalMB.toFixed(0)}MB used).`);
+  }
   await mongoose.disconnect();
   process.exit(0);
 }
