@@ -1,4 +1,5 @@
 const express = require("express");
+const mongoose = require("mongoose");
 const Razorpay = require("razorpay");
 const crypto = require("crypto");
 const Payment = require("../models/payments");
@@ -137,6 +138,10 @@ router.get("/my-payments", async (req, res) => {
   try {
     const { userId } = req.query;
     if (!userId) return res.status(400).json({ success: false, error: "userId is required" });
+    // Invalid id → no payments (don't 500 on a CastError)
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.json({ success: true, count: 0, payments: [] });
+    }
 
     const payments = await Payment.find({ user: userId, status: "success" })
       .sort({ createdAt: -1 })
