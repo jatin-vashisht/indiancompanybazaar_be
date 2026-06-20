@@ -1,9 +1,6 @@
 const Business = require("../models/Business");
 const Bid = require("../models/Bid");
-const fs = require("fs");
-const path = require("path");
-const csv = require("csv-parser");
-const loadCSV = require("../utils/csvLoader");
+const Company = require("../models/Company");
 
 /**
  * @desc Register a new business (only Seller or CA can do this)
@@ -256,32 +253,56 @@ const deleteBusiness = async (req, res) => {
   }
 };
 
+// Escape user input before using it inside a RegExp.
+const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+// Map a Company document to the exact keys the frontend ("All Companies"
+// tab) expects, including the legacy BOM-prefixed "CIN" key. Extra fields
+// are included too for richer detail views; the current UI ignores them.
+const toFrontendShape = (c) => ({
+  "﻿CIN": c.cin || "",
+  "Company Name": c.companyName || "",
+  "NIC Code": c.nicCode || "",
+  "Company Registration Date": c.registrationDate || "",
+  "Company Status": c.companyStatus || "",
+  "Company Industrial Classification": c.industrialClassification || "",
+  "Company State Code": c.stateCode || "",
+  // Extra fields from the ROC dataset (available for future UI):
+  rocCode: c.rocCode || "",
+  category: c.category || "",
+  subCategory: c.subCategory || "",
+  companyClass: c.companyClass || "",
+  authorizedCapital: c.authorizedCapital ?? null,
+  paidupCapital: c.paidupCapital ?? null,
+  registeredOfficeAddress: c.registeredOfficeAddress || "",
+  listingStatus: c.listingStatus || "",
+  indianForeign: c.indianForeign || "",
+});
+
 const getCSVCompanies = async (req, res) => {
   try {
-    const page = parseInt(req.query.page || "1");
-    const limit = parseInt(req.query.limit || "10");
-    const search = (req.query.search || "").toLowerCase();
+    const page = Math.max(1, parseInt(req.query.page || "1", 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || "20", 10) || 20));
+    const search = (req.query.search || "").trim();
 
-    // const data = await loadCSV(); // full CSV data (cached)
-    const data = await loadCSV();
-console.log("CSV LENGTH:", data.length);
-console.log("FIRST ROW:", data[0]);
+    const filter = search
+      ? { companyName: { $regex: escapeRegex(search), $options: "i" } }
+      : {};
 
+    // estimatedDocumentCount is O(1) for the unfiltered case (~1M docs).
+    const total = search
+      ? await Company.countDocuments(filter)
+      : await Company.estimatedDocumentCount();
 
-    // 🔍 GLOBAL SEARCH (search entire CSV)
-    let filtered = data;
-    if (search) {
-      filtered = data.filter((item) =>
-  item["Company Name"]?.toLowerCase().includes(search)
-);
-
-    }
-
-    const total = filtered.length;
     const totalPages = Math.ceil(total / limit);
-    const offset = (page - 1) * limit;
 
-    const companies = filtered.slice(offset, offset + limit);
+    const docs = await Company.find(filter)
+      .sort({ companyName: 1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean();
+
+    const companies = docs.map(toFrontendShape);
 
     return res.json({
       success: true,
