@@ -267,16 +267,11 @@ const toFrontendShape = (c) => ({
   "Company Status": c.companyStatus || "",
   "Company Industrial Classification": c.industrialClassification || "",
   "Company State Code": c.stateCode || "",
-  // Full ROC dataset fields:
-  "ROC Code": c.rocCode || "",
-  "Company Category": c.category || "",
-  "Company SubCategory": c.subCategory || "",
+  // Additional fields kept within the free-tier budget:
   "Company Class": c.companyClass || "",
   "Authorized Capital": c.authorizedCapital ?? null,
   "Paidup Capital": c.paidupCapital ?? null,
   "Registered Office Address": c.registeredOfficeAddress || "",
-  "Listing Status": c.listingStatus || "",
-  "Indian/Foreign Company": c.indianForeign || "",
 });
 
 const getCSVCompanies = async (req, res) => {

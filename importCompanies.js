@@ -27,9 +27,9 @@ const DATA_DIR =
   process.env.DATA_DIR || path.join(os.homedir(), "Desktop", "personal", "icb_data");
 const BATCH_SIZE = parseInt(process.env.BATCH_SIZE || "2000", 10);
 // Stop before the free Atlas tier's 512MB ceiling so a re-run can never
-// block writes on the production cluster. Measured as logical dataSize +
-// indexSize (what Atlas counts toward the quota).
-const MAX_LOGICAL_MB = parseInt(process.env.MAX_LOGICAL_MB || "480", 10);
+// block writes on the production cluster. Atlas counts ~1.3x the logical
+// (dataSize + indexSize), so cap the logical at ~375MB (~490MB on Atlas).
+const MAX_LOGICAL_MB = parseInt(process.env.MAX_LOGICAL_MB || "375", 10);
 
 const clean = (v) => (v === undefined || v === null ? undefined : String(v).trim() || undefined);
 const toNumber = (v) => {
@@ -38,23 +38,21 @@ const toNumber = (v) => {
   return Number.isFinite(n) ? n : undefined;
 };
 
-// Map a CSV row (headers BOM-stripped + trimmed) to a full Company document.
+// Map a CSV row (headers BOM-stripped + trimmed) to a Company document.
+// Keeps the most useful fields; the 5 low-value ROC classification columns
+// (CompanyROCcode, CompanyCategory, CompanySubCategory, Listingstatus,
+// CompanyIndian/Foreign) are dropped to fit the free Atlas tier.
 function mapRow(row) {
   return {
     cin: clean(row["CIN"]),
     companyName: clean(row["CompanyName"]),
-    rocCode: clean(row["CompanyROCcode"]),
-    category: clean(row["CompanyCategory"]),
-    subCategory: clean(row["CompanySubCategory"]),
     companyClass: clean(row["CompanyClass"]),
     authorizedCapital: toNumber(row["AuthorizedCapital"]),
     paidupCapital: toNumber(row["PaidupCapital"]),
     registrationDate: clean(row["CompanyRegistrationdate_date"]),
     registeredOfficeAddress: clean(row["Registered_Office_Address"]),
-    listingStatus: clean(row["Listingstatus"]),
     companyStatus: clean(row["CompanyStatus"]),
     stateCode: clean(row["CompanyStateCode"]),
-    indianForeign: clean(row["CompanyIndian/Foreign Company"]),
     nicCode: clean(row["nic_code"]),
     industrialClassification: clean(row["CompanyIndustrialClassification"]),
   };
@@ -160,7 +158,11 @@ async function main() {
   });
 
   console.log(`Clearing existing companies collection...`);
-  await Company.deleteMany({});
+  // drop() frees storage even when the cluster is over quota (deleteMany,
+  // being a write, can be blocked); ignore "ns not found" on first run.
+  await Company.collection.drop().catch((e) => {
+    if (!/ns not found/i.test(e.message)) throw e;
+  });
 
   console.log(`Importing ${files.length} CSV file(s) from ${DATA_DIR}\n`);
   let grandTotal = 0;
