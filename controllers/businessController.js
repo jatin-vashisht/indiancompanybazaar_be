@@ -257,7 +257,8 @@ const deleteBusiness = async (req, res) => {
 const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 // Map a Company document to the exact keys the frontend ("All Companies"
-// tab) expects, including the legacy BOM-prefixed "CIN" key.
+// tab) expects, including the legacy BOM-prefixed "CIN" key, plus the full
+// set of ROC fields so the detail page can show everything.
 const toFrontendShape = (c) => ({
   "﻿CIN": c.cin || "",
   "Company Name": c.companyName || "",
@@ -266,6 +267,16 @@ const toFrontendShape = (c) => ({
   "Company Status": c.companyStatus || "",
   "Company Industrial Classification": c.industrialClassification || "",
   "Company State Code": c.stateCode || "",
+  // Full ROC dataset fields:
+  "ROC Code": c.rocCode || "",
+  "Company Category": c.category || "",
+  "Company SubCategory": c.subCategory || "",
+  "Company Class": c.companyClass || "",
+  "Authorized Capital": c.authorizedCapital ?? null,
+  "Paidup Capital": c.paidupCapital ?? null,
+  "Registered Office Address": c.registeredOfficeAddress || "",
+  "Listing Status": c.listingStatus || "",
+  "Indian/Foreign Company": c.indianForeign || "",
 });
 
 const getCSVCompanies = async (req, res) => {
@@ -310,9 +321,26 @@ const getCSVCompanies = async (req, res) => {
   }
 };
 
+// GET /api/business/companies/:cin — fetch a single ROC company by CIN so the
+// detail page works on direct load/refresh (not only via the list).
+const getCompanyByCin = async (req, res) => {
+  try {
+    const cin = decodeURIComponent(req.params.cin || "").trim();
+    if (!cin) return res.status(400).json({ success: false, message: "CIN is required" });
+
+    const doc = await Company.findOne({ cin }).lean();
+    if (!doc) return res.status(404).json({ success: false, message: "Company not found" });
+
+    return res.json({ success: true, company: toFrontendShape(doc) });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
 
 
 module.exports = {
+  getCompanyByCin,
   registerBusiness,
   addAuctionDetails,
   uploadBusinessDocuments,

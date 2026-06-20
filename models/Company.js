@@ -2,26 +2,35 @@ const mongoose = require("mongoose");
 
 /**
  * Company master data, ingested from the ROC state CSV exports
- * (see importCompanies.js). Backs GET /api/business/all-companies.
+ * (see importCompanies.js). Backs GET /api/business/all-companies (list)
+ * and GET /api/business/companies/:cin (detail).
  *
- * SLIM schema: only the fields the "All Companies" UI actually renders are
- * stored, to keep the dataset (~1M rows) within the free Atlas tier (512MB).
- * No secondary index on companyName (it would be too large for the free
- * tier) — the endpoint sorts by _id (insertion order) and uses a regex
- * scan for name search.
+ * Stores ALL fields from the ROC CSVs so the detail page can show full
+ * details. No secondary index on companyName — on the free Atlas tier such
+ * an index over ~617k long strings is what blew the 512MB quota; the list
+ * endpoint sorts by _id and search uses a regex scan.
  *
- * Field names are clean here; the API layer maps them to the exact keys the
- * frontend expects (e.g. "Company Name", "﻿CIN").
+ * Field names are clean here; the API layer maps the seven legacy fields to
+ * the exact keys the frontend list expects (e.g. "Company Name", "﻿CIN").
  */
 const companySchema = new mongoose.Schema(
   {
     cin: { type: String },
     companyName: { type: String },
-    nicCode: { type: String },
+    rocCode: { type: String },
+    category: { type: String },
+    subCategory: { type: String },
+    companyClass: { type: String },
+    authorizedCapital: { type: Number },
+    paidupCapital: { type: Number },
     registrationDate: { type: String },
+    registeredOfficeAddress: { type: String },
+    listingStatus: { type: String },
     companyStatus: { type: String },
-    industrialClassification: { type: String },
     stateCode: { type: String },
+    indianForeign: { type: String },
+    nicCode: { type: String },
+    industrialClassification: { type: String },
   },
   { collection: "companies", timestamps: false }
 );

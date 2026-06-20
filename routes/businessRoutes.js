@@ -7,6 +7,7 @@ const {
   getBusinessById,
   deleteBusiness,
   getCSVCompanies,
+  getCompanyByCin,
 } = require("../controllers/businessController");
 const Business = require("../models/Business.js");
 const upload = require("../middleware/upload");
@@ -291,6 +292,9 @@ router.post("/register", (req, res, next) => {
 
 
 router.get("/all-companies", getCSVCompanies);
+
+// Single ROC company by CIN (detail page; works on direct load/refresh)
+router.get("/companies/:cin", getCompanyByCin);
 
 
 

@@ -32,18 +32,31 @@ const BATCH_SIZE = parseInt(process.env.BATCH_SIZE || "2000", 10);
 const MAX_LOGICAL_MB = parseInt(process.env.MAX_LOGICAL_MB || "480", 10);
 
 const clean = (v) => (v === undefined || v === null ? undefined : String(v).trim() || undefined);
+const toNumber = (v) => {
+  if (v === undefined || v === null || String(v).trim() === "") return undefined;
+  const n = parseFloat(String(v).replace(/,/g, ""));
+  return Number.isFinite(n) ? n : undefined;
+};
 
-// SLIM mapping: only the fields the "All Companies" UI renders, to fit the
-// full ~1M-row dataset inside the free Atlas tier.
+// Map a CSV row (headers BOM-stripped + trimmed) to a full Company document.
 function mapRow(row) {
   return {
     cin: clean(row["CIN"]),
     companyName: clean(row["CompanyName"]),
-    nicCode: clean(row["nic_code"]),
+    rocCode: clean(row["CompanyROCcode"]),
+    category: clean(row["CompanyCategory"]),
+    subCategory: clean(row["CompanySubCategory"]),
+    companyClass: clean(row["CompanyClass"]),
+    authorizedCapital: toNumber(row["AuthorizedCapital"]),
+    paidupCapital: toNumber(row["PaidupCapital"]),
     registrationDate: clean(row["CompanyRegistrationdate_date"]),
+    registeredOfficeAddress: clean(row["Registered_Office_Address"]),
+    listingStatus: clean(row["Listingstatus"]),
     companyStatus: clean(row["CompanyStatus"]),
-    industrialClassification: clean(row["CompanyIndustrialClassification"]),
     stateCode: clean(row["CompanyStateCode"]),
+    indianForeign: clean(row["CompanyIndian/Foreign Company"]),
+    nicCode: clean(row["nic_code"]),
+    industrialClassification: clean(row["CompanyIndustrialClassification"]),
   };
 }
 
