@@ -1,6 +1,7 @@
 const Business = require("../models/Business");
 const Bid = require("../models/Bid");
 const Company = require("../models/Company");
+const { signBusinessDocuments } = require("../utils/s3");
 
 /**
  * @desc Register a new business (only Seller or CA can do this)
@@ -96,24 +97,53 @@ const addAuctionDetails = async (req, res) => {
 
 
 // 📂 Upload business documents
+// Map incoming document categories to the schema enum.
+const DOC_TYPE_MAP = {
+  images: "image",
+  image: "image",
+  financial: "financial",
+  financialstatements: "financial",
+  itr: "itr",
+  incometaxreturns: "itr",
+  certificate: "certificate",
+  certificates: "certificate",
+  additional: "additional",
+};
+
 const uploadBusinessDocuments = async (req, res) => {
   try {
     const { businessId } = req.params;
-    const { documents } = req.body;
 
     const business = await Business.findById(businessId);
     if (!business) {
       return res.status(404).json({ message: "Business not found" });
     }
 
-    if (documents && documents.length > 0) {
-      business.documents.push(...documents);
+    if (req.file) {
+      // multer-s3 uploaded the file to the private bucket; store its key.
+      const rawType = String(req.body.type || "additional").toLowerCase();
+      business.documents.push({
+        type: DOC_TYPE_MAP[rawType] || "additional",
+        name: req.body.name || req.file.originalname,
+        key: req.file.key,
+      });
       await business.save();
+    } else if (req.body.documents) {
+      // Legacy path: pre-built document objects in the body.
+      const docs =
+        typeof req.body.documents === "string"
+          ? JSON.parse(req.body.documents)
+          : req.body.documents;
+      if (Array.isArray(docs) && docs.length > 0) {
+        business.documents.push(...docs);
+        await business.save();
+      }
     }
 
+    const signed = await signBusinessDocuments(business);
     res.json({
       message: "Documents uploaded successfully!",
-      business,
+      business: signed,
     });
   } catch (error) {
     console.error("Error uploading documents:", error);
@@ -218,9 +248,12 @@ const getBusinessById = async (req, res) => {
     const startingPrice =
       business.auctionDetails?.[0]?.startingBidAmount || 0;
 
+    // Presign any S3 document keys into short-lived URLs.
+    const signedBusiness = await signBusinessDocuments(business);
+
     return res.status(200).json({
       success: true,
-      business,
+      business: signedBusiness,
       bids,
       currentHighestBid,
       minimumNextBid,

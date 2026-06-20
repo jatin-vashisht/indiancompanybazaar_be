@@ -17,7 +17,8 @@ const documentSchema = new mongoose.Schema({
     required: true,
   },
   name: { type: String, required: true },
-  url: { type: String, required: true }, // Cloudinary / Supabase URL
+  key: { type: String }, // S3 object key (private; served via presigned URL)
+  url: { type: String }, // legacy direct URL (Cloudinary) for old records
   uploadedAt: { type: Date, default: Date.now },
 });
 
