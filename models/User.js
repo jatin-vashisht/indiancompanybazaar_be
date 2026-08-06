@@ -5,6 +5,14 @@ const userSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true },
   password: String,
   role: { type: String, enum: ["user","buyer", "seller", "ca", "admin"], default: "buyer" },
+  // Capabilities decide what a user can DO, independent of their display role.
+  // This is what lets a buyer also sell (and vice-versa) without abusing the
+  // "ca" role. Defaults mirror a plain buyer.
+  canBuy: { type: Boolean, default: true },
+  canSell: { type: Boolean, default: false },
+  // Profile fields (collected post-signup via the Settings page).
+  phone: { type: String },
+  address: { type: String },
   isVerified: { type: Boolean, default: false },
   verificationToken: String
 });

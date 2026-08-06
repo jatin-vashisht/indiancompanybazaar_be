@@ -140,8 +140,9 @@ router.get("/business-listings", authenticate, async (req, res) => {
 
 router.post("/place-bid", authenticate, async (req, res) => {
   try {
-    if (req.user.role !== "buyer")
-      return res.status(403).json({ message: "Only buyers can place bids" });
+    // Gate on the canBuy CAPABILITY, so a seller who registered to buy can bid.
+    if (!req.user.canBuy)
+      return res.status(403).json({ message: "Your account is not enabled to bid. Register to buy first." });
 
     const { businessId, amount } = req.body;
 

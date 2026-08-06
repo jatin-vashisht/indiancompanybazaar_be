@@ -3,7 +3,20 @@ const mongoose = require("mongoose");
 const Razorpay = require("razorpay");
 const crypto = require("crypto");
 const Payment = require("../models/payments");
+const Business = require("../models/Business");
 const router = express.Router();
+
+// The amount a buyer pays is derived from the listing, NOT from the client:
+// starting bid + 10% buyer's premium + 7% taxes/fees. Computing it here stops
+// a caller from crafting an order for an arbitrary amount.
+async function computeAmountForBusiness(businessId) {
+  if (!businessId || !mongoose.Types.ObjectId.isValid(businessId)) return null;
+  const business = await Business.findById(businessId).select("auctionDetails");
+  if (!business) return null;
+  const base = business.auctionDetails?.[0]?.startingBidAmount || 0;
+  if (!base) return null;
+  return Math.round(base * 1.17); // 10% premium + 7% taxes
+}
 
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_KEY_ID,
@@ -43,10 +56,17 @@ const razorpay = new Razorpay({
  */
 router.post("/create-order", async (req, res) => {
   try {
-    const { amount, currency = "INR", receipt, notes } = req.body;
+    const { currency = "INR", receipt, notes } = req.body;
+    // businessId is the source of truth for the amount (top-level or notes).
+    const businessId = req.body.businessId || notes?.companyId;
+
+    const amount = await computeAmountForBusiness(businessId);
+    if (amount === null) {
+      return res.status(400).json({ error: "Invalid business or no auction amount to charge" });
+    }
 
     const order = await razorpay.orders.create({
-      amount: Math.round(amount * 100),
+      amount: Math.round(amount * 100), // paise
       currency,
       receipt,
       notes,
@@ -98,15 +118,17 @@ router.post("/verify-payment", async (req, res) => {
       .digest("hex");
 
     if (expectedSignature === razorpay_signature) {
-      // Record the successful payment for the buyer's payment history.
-      // userId/businessId/amount are sent by the checkout page.
-      const { userId, businessId, amount } = req.body;
-      if (userId && businessId) {
+      // Record the payment against the AUTHENTICATED user, with the amount
+      // recomputed server-side — never trusting the client-sent userId/amount.
+      const userId = req.user._id;
+      const { businessId } = req.body;
+      if (businessId) {
         try {
+          const amount = await computeAmountForBusiness(businessId);
           await Payment.create({
             user: userId,
             business: businessId,
-            amount,
+            amount: amount ?? 0,
             status: "success",
             paymentId: razorpay_payment_id,
           });
@@ -136,16 +158,13 @@ router.post("/verify-payment", async (req, res) => {
  */
 router.get("/my-payments", async (req, res) => {
   try {
-    const { userId } = req.query;
-    if (!userId) return res.status(400).json({ success: false, error: "userId is required" });
-    // Invalid id → no payments (don't 500 on a CastError)
-    if (!mongoose.Types.ObjectId.isValid(userId)) {
-      return res.json({ success: true, count: 0, payments: [] });
-    }
+    // Identity comes from the token, NOT a query param — a user can only read
+    // their own payment history.
+    const userId = req.user._id;
 
     const payments = await Payment.find({ user: userId, status: "success" })
       .sort({ createdAt: -1 })
-      .populate("business", "companyName CIN registeredAddress");
+      .populate("business", "companyName");
 
     res.json({ success: true, count: payments.length, payments });
   } catch (error) {

@@ -4,8 +4,36 @@ const { register, login } = require('../controllers/authController');
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcrypt");
 const authenticate = require("../middleware/authMiddleware").authenticate;
+const { signToken, authCookieOptions, AUTH_COOKIE } = require("../utils/auth");
 
 const User = require("../models/User");
+
+// Capabilities implied by a chosen role. A buyer can buy; a seller can sell;
+// a CA can do both. Admin gets both too. "user" is a not-yet-onboarded buyer.
+function capsForRole(role) {
+  switch (role) {
+    case "seller": return { canBuy: false, canSell: true };
+    case "ca": return { canBuy: true, canSell: true };
+    case "admin": return { canBuy: true, canSell: true };
+    case "buyer":
+    case "user":
+    default: return { canBuy: true, canSell: false };
+  }
+}
+
+// Shape the user object returned to the client (never includes password).
+function publicUser(user) {
+  return {
+    id: user._id,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+    canBuy: user.canBuy,
+    canSell: user.canSell,
+    phone: user.phone || null,
+    address: user.address || null,
+  };
+}
 
 // Protect middleware (check token and attach user)
 const protect = async (req, res, next) => {
@@ -185,18 +213,28 @@ router.post("/verify-otp", async (req, res) => {
     if (Date.now() > pending.expiresAt)
       return res.status(400).json({ error: "OTP expired" });
 
+    const caps = capsForRole(pending.role);
     const user = new User({
       name: pending.name,
       email: pending.email,
       password: pending.password,
       role: pending.role,
+      canBuy: caps.canBuy,
+      canSell: caps.canSell,
       isVerified: true,
     });
 
     await user.save();
     await PendingUser.deleteOne({ _id: pending._id });
 
-    res.status(201).json({ message: "User verified and registered successfully" });
+    // Auto-login on successful verification: issue token + httpOnly cookie.
+    const token = signToken(user);
+    res.cookie(AUTH_COOKIE, token, authCookieOptions());
+    res.status(201).json({
+      message: "User verified and registered successfully",
+      token,
+      user: publicUser(user),
+    });
   } catch (err) {
     console.error("Verification error:", err);
     res.status(500).json({ error: "Server error" });
@@ -242,27 +280,14 @@ router.post("/login", async (req, res) => {
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(400).json({ error: "Password mismatch" });
 
-    // ✅ Include role inside JWT
-    const token = jwt.sign(
-  { id: user._id, email: user.email, role: user.role },
-  process.env.JWT_SECRET,
-  { expiresIn: "3d" }
-);
+    // Token carries role + capabilities; also set as an httpOnly cookie.
+    const token = signToken(user);
+    res.cookie(AUTH_COOKIE, token, authCookieOptions());
 
-
-    // ✅ Don’t return password
-    user.password = undefined;
-
-    // ✅ Include role in response
     res.status(200).json({
       message: "Login successful",
       token,
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role, // 👈 Added role here
-      },
+      user: publicUser(user),
     });
   } catch (err) {
     console.error("Login error:", err);
@@ -327,46 +352,115 @@ router.post("/login", async (req, res) => {
  */
 
 
-router.post("/set-role", async (req, res) => {
+// Onboarding role selection. NOW AUTHENTICATED — it acts on the caller's own
+// account (never an email from the body) and refuses privileged roles, so it
+// can't be used to self-promote to admin/ca. buyer/seller only.
+router.post("/set-role", authenticate, async (req, res) => {
   try {
-    const { email, role } = req.body;
-
-    if (!email || !role) {
-      return res.status(400).json({ error: "Email and role are required" });
+    const { role } = req.body;
+    const ALLOWED = ["buyer", "seller"];
+    if (!role || !ALLOWED.includes(role)) {
+      return res.status(400).json({ error: "Role must be one of: buyer, seller" });
     }
 
-    const user = await User.findOneAndUpdate(
-      { email },
-      { role },
-      { new: true, runValidators: true }
-    );
+    const caps = capsForRole(role);
+    req.user.role = role;
+    req.user.canBuy = caps.canBuy;
+    req.user.canSell = caps.canSell;
+    await req.user.save();
 
-    if (!user) {
-      return res.status(404).json({ error: "User not found" });
-    }
-
-    // ✅ Generate a fresh JWT after updating the role
-    const token = jwt.sign(
-      { id: user._id, email: user.email, role: user.role },
-      process.env.JWT_SECRET,
-      { expiresIn: "7d" }
-    );
-
-    // ✅ Send both token and user info in response
+    const token = signToken(req.user);
+    res.cookie(AUTH_COOKIE, token, authCookieOptions());
     res.status(200).json({
       message: "Role updated successfully",
-      token, // 👈 this is the missing part
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-      },
+      token,
+      user: publicUser(req.user),
     });
   } catch (err) {
     console.error("Set role error:", err);
     res.status(500).json({ error: "Server error" });
   }
+});
+
+// A8 — Register for the OTHER capability (buyer↔seller) without changing the
+// user's primary role or granting privileged access. Additive only.
+router.post("/register-capability", authenticate, async (req, res) => {
+  try {
+    const { capability } = req.body; // "buyer" | "seller"
+    if (!["buyer", "seller"].includes(capability)) {
+      return res.status(400).json({ error: "capability must be 'buyer' or 'seller'" });
+    }
+    if (capability === "buyer") req.user.canBuy = true;
+    if (capability === "seller") req.user.canSell = true;
+    await req.user.save();
+
+    const token = signToken(req.user);
+    res.cookie(AUTH_COOKIE, token, authCookieOptions());
+    res.status(200).json({
+      message: `You can now ${capability === "seller" ? "sell/list" : "buy/bid"} as well.`,
+      token,
+      user: publicUser(req.user),
+    });
+  } catch (err) {
+    console.error("register-capability error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Current user (identity source for a cookie-only frontend).
+router.get("/me", authenticate, async (req, res) => {
+  res.status(200).json({ user: publicUser(req.user) });
+});
+
+// Update editable profile fields on the caller's own account.
+router.put("/profile", authenticate, async (req, res) => {
+  try {
+    const { name, phone, address } = req.body;
+    if (typeof name === "string" && name.trim()) req.user.name = name.trim();
+    if (typeof phone === "string") {
+      const digits = phone.replace(/\D/g, "");
+      // Optional, but if given must be exactly 10 digits.
+      if (digits && digits.length !== 10) {
+        return res.status(400).json({ error: "Phone number must be exactly 10 digits" });
+      }
+      req.user.phone = digits;
+    }
+    if (typeof address === "string") req.user.address = address.trim();
+    await req.user.save();
+    res.status(200).json({ message: "Profile updated", user: publicUser(req.user) });
+  } catch (err) {
+    console.error("profile update error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Change password: verify the current one, then store a new bcrypt hash.
+router.post("/change-password", authenticate, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: "Current and new password are required" });
+    }
+    if (String(newPassword).length < 8) {
+      return res.status(400).json({ error: "New password must be at least 8 characters" });
+    }
+    const user = await User.findById(req.user._id).select("+password");
+    const ok = await bcrypt.compare(currentPassword, user.password);
+    if (!ok) return res.status(400).json({ error: "Current password is incorrect" });
+
+    user.password = await bcrypt.hash(newPassword, 10);
+    await user.save();
+    res.status(200).json({ message: "Password changed successfully" });
+  } catch (err) {
+    console.error("change-password error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Logout: clear the auth cookie.
+router.post("/logout", (req, res) => {
+  res.clearCookie(AUTH_COOKIE, { ...authCookieOptions(), maxAge: undefined });
+  res.status(200).json({ message: "Logged out" });
 });
 
 

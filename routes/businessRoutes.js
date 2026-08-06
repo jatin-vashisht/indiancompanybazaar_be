@@ -8,11 +8,12 @@ const {
   deleteBusiness,
   getCSVCompanies,
   getCompanyByCin,
+  getCompanyById,
 } = require("../controllers/businessController");
 const Business = require("../models/Business.js");
 const upload = require("../middleware/upload");
-const { authenticate, authorize} = require("../middleware/authMiddleware.js");
-// const {authorizeRoles} = require("../middleware/roleMiddleware.js");
+const { authenticate, authorize, requireCapability, optionalAuth } = require("../middleware/authMiddleware.js");
+const { getMyBusinesses, getBidsReceived } = require("../controllers/businessController");
 
 const router = express.Router();
 
@@ -188,16 +189,9 @@ const router = express.Router();
 
 console.log("✅ Business routes loaded");
 
-router.post("/register", (req, res, next) => {
-  console.log("🟢 1️⃣ /register hit");
-  next();
-}, authenticate, (req, res, next) => {
-  console.log("🟢 2️⃣ After authenticate:", req.user ? "User attached" : "No user");
-  next();
-}, authorize("seller", "ca"), (req, res, next) => {
-  console.log("🟢 3️⃣ After authorize:", req.user ? req.user.email : "No user");
-  next();
-}, registerBusiness);
+// Gated by the canSell CAPABILITY, not a role, so a buyer who registered to
+// sell can list too.
+router.post("/register", authenticate, requireCapability("canSell"), registerBusiness);
 
 
 
@@ -291,10 +285,14 @@ router.post("/register", (req, res, next) => {
  */
 
 
-router.get("/all-companies", getCSVCompanies);
+router.get("/all-companies", optionalAuth, getCSVCompanies);
 
-// Single ROC company by CIN (detail page; works on direct load/refresh)
-router.get("/companies/:cin", getCompanyByCin);
+// Single ROC company by Mongo _id (detail page — keeps CIN out of the URL).
+// Declared BEFORE "/companies/:cin" so "id" isn't captured as a CIN.
+router.get("/companies/id/:id", optionalAuth, getCompanyById);
+
+// Single ROC company by CIN (legacy/direct-load fallback).
+router.get("/companies/:cin", optionalAuth, getCompanyByCin);
 
 
 
@@ -383,7 +381,7 @@ router.get("/companies/:cin", getCompanyByCin);
  *       500:
  *         description: Internal server error
  */
-router.post("/:businessId/auction", addAuctionDetails);
+router.post("/:businessId/auction", authenticate, addAuctionDetails);
 
 /**
  * @swagger
@@ -426,7 +424,7 @@ router.post("/:businessId/auction", addAuctionDetails);
  *       500:
  *         description: Server error
  */
-router.post("/:businessId/documents", upload.single("file"), uploadBusinessDocuments);
+router.post("/:businessId/documents", authenticate, upload.single("file"), uploadBusinessDocuments);
 
 /**
  * @swagger
@@ -440,7 +438,12 @@ router.post("/:businessId/documents", upload.single("file"), uploadBusinessDocum
  *       500:
  *         description: Server error
  */
-router.get("/", getAllBusinesses);
+router.get("/", optionalAuth, getAllBusinesses);
+
+// Seller-scoped: the caller's own listings, and bids across them.
+// Declared BEFORE "/:businessId" so "mine"/"bids-received" aren't treated as ids.
+router.get("/mine", authenticate, requireCapability("canSell"), getMyBusinesses);
+router.get("/bids-received", authenticate, requireCapability("canSell"), getBidsReceived);
 
 
 
@@ -465,7 +468,7 @@ router.get("/", getAllBusinesses);
  *       500:
  *         description: Server error
  */
-router.get("/:businessId", getBusinessById);
+router.get("/:businessId", optionalAuth, getBusinessById);
 
 /**
  * @swagger
@@ -488,6 +491,6 @@ router.get("/:businessId", getBusinessById);
  *       500:
  *         description: Server error
  */
-router.delete("/:businessId", deleteBusiness);
+router.delete("/:businessId", authenticate, deleteBusiness);
 
 module.exports = router;

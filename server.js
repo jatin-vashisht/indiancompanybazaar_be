@@ -2,6 +2,7 @@ const express = require('express');
 require('express-async-errors');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const cookieParser = require('cookie-parser');
 const dotenv = require('dotenv');
 const path = require('path');
 const { authenticate, authorize } = require('./middleware/authMiddleware');
@@ -12,18 +13,25 @@ const swaggerDocs = require('./swagger/swagger'); // ✅ Import only this functi
 dotenv.config();
 const app = express();
 
+// Allowed origins — extend with CLIENT_ORIGIN for local dev.
+const allowedOrigins = [
+  "https://kahemindia.com",
+  "https://www.kahemindia.com",
+  "http://localhost:3000",
+];
+if (process.env.CLIENT_ORIGIN && !allowedOrigins.includes(process.env.CLIENT_ORIGIN)) {
+  allowedOrigins.push(process.env.CLIENT_ORIGIN);
+}
+
 app.use(cors({
-  origin: [
-    "https://kahemindia.com",
-    "https://www.kahemindia.com",
-    "http://localhost:3000",
-  ],
-  credentials: true,
+  origin: allowedOrigins,
+  credentials: true, // required so the browser sends/receives the auth cookie
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
   allowedHeaders: ["Content-Type", "Authorization"]
 }));
 
 app.use(express.json());
+app.use(cookieParser());
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Import routes
@@ -42,7 +50,7 @@ app.use('/api/business', businessRoutes);
 app.use('/api/admin',authenticate, authorize('admin'), adminRoutes);
 app.use('/api/orders',authenticate, orderRoutes);
 app.use("/api/buyer",authenticate, buyerRoutes);
-app.use("/api/razorpay", razorpayRoutes);
+app.use("/api/razorpay", authenticate, razorpayRoutes);
 
 // ✅ Initialize Swagger properly (only once)
 swaggerDocs(app);
