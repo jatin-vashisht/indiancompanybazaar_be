@@ -1,4 +1,4 @@
-# Business Marketplace - Backend (Swagger)
+# Business Marketplace - Backend (Swagger).
 
 This is a backend-only implementation of the Business Marketplace described.
 
