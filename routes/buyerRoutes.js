@@ -138,6 +138,18 @@ router.get("/business-listings", authenticate, async (req, res) => {
  *         description: Server error
  */
 
+// DISABLED: bids can no longer be placed directly. A non-refundable token must
+// be paid first — bids are created server-side only in
+// POST /api/razorpay/verify-bid-payment after the token payment is verified.
+// The original implementation is preserved below for reference.
+router.post("/place-bid", authenticate, async (req, res) => {
+  return res.status(403).json({
+    message:
+      "Bids require a token payment. Use the bid-token flow (create-bid-order → verify-bid-payment).",
+  });
+});
+
+/*
 router.post("/place-bid", authenticate, async (req, res) => {
   try {
     // Gate on the canBuy CAPABILITY, so a seller who registered to buy can bid.
@@ -187,6 +199,7 @@ router.post("/place-bid", authenticate, async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 });
+*/
 
 
 /* -------------------------------------------------------------------------- */

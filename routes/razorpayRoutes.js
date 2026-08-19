@@ -4,6 +4,7 @@ const Razorpay = require("razorpay");
 const crypto = require("crypto");
 const Payment = require("../models/payments");
 const Business = require("../models/Business");
+const Bid = require("../models/Bid");
 const router = express.Router();
 
 // The amount a buyer pays is derived from the listing, NOT from the client:
@@ -16,6 +17,25 @@ async function computeAmountForBusiness(businessId) {
   const base = business.auctionDetails?.[0]?.startingBidAmount || 0;
   if (!base) return null;
   return Math.round(base * 1.17); // 10% premium + 7% taxes
+}
+
+// Non-refundable token required to place a bid, by bid-amount tier.
+// < ₹1L → ₹5k · ₹1–5L → ₹10k · ₹5–25L → ₹25k · > ₹25L → ₹50k.
+function tokenForBid(bidAmount) {
+  const b = Number(bidAmount);
+  if (!Number.isFinite(b) || b <= 0) return 0;
+  if (b < 100000) return 5000;
+  if (b <= 500000) return 10000;
+  if (b <= 2500000) return 25000;
+  return 50000;
+}
+
+// The lowest acceptable bid for a business: clear the starting price and beat
+// the current highest bid.
+function minBidForBusiness(business) {
+  const starting = business.auctionDetails?.[0]?.startingBidAmount || 0;
+  const highest = business.highestBid || 0;
+  return Math.max(starting, highest + 1);
 }
 
 const razorpay = new Razorpay({
@@ -68,7 +88,7 @@ router.post("/create-order", async (req, res) => {
     const order = await razorpay.orders.create({
       amount: Math.round(amount * 100), // paise
       currency,
-      receipt,
+      receipt: String(receipt || `rcpt_${Date.now()}`).slice(0, 40), // Razorpay caps length
       notes,
     });
 
@@ -170,6 +190,111 @@ router.get("/my-payments", async (req, res) => {
   } catch (error) {
     console.error("Fetch payments error:", error);
     res.status(500).json({ error: error.message || "Failed to fetch payments" });
+  }
+});
+
+/* -------------------------------------------------------------------------- */
+/* 🪙 BID TOKEN FLOW — pay a token before a bid is accepted                    */
+/* -------------------------------------------------------------------------- */
+
+// Create a Razorpay order for the TOKEN required to place a given bid.
+// Validates capability + minimum bid + tier server-side. Does NOT place the bid.
+router.post("/create-bid-order", async (req, res) => {
+  try {
+    if (!req.user.canBuy) {
+      return res.status(403).json({ error: "Your account is not enabled to bid. Register to buy first." });
+    }
+    const { businessId } = req.body;
+    const bidAmount = Number(req.body.bidAmount);
+    if (!mongoose.Types.ObjectId.isValid(businessId)) {
+      return res.status(400).json({ error: "Invalid business id" });
+    }
+    if (!Number.isFinite(bidAmount) || bidAmount <= 0) {
+      return res.status(400).json({ error: "Invalid bid amount" });
+    }
+
+    const business = await Business.findById(businessId).select("auctionDetails highestBid");
+    if (!business) return res.status(404).json({ error: "Business not found" });
+
+    const minBid = minBidForBusiness(business);
+    if (bidAmount < minBid) {
+      return res.status(400).json({ error: `Your bid must be at least ${minBid}` });
+    }
+
+    const token = tokenForBid(bidAmount);
+    const order = await razorpay.orders.create({
+      amount: Math.round(token * 100), // paise
+      currency: "INR",
+      receipt: `bt_${Date.now()}`, // Razorpay caps receipt length
+      notes: { type: "bid_token", businessId: String(businessId), bidAmount: String(bidAmount) },
+    });
+
+    res.json({ order, token, bidAmount, minBid });
+  } catch (error) {
+    console.error("create-bid-order error:", error);
+    const message = error?.error?.description || error?.message || "Failed to create bid order";
+    res.status(error?.statusCode || 500).json({ error: message });
+  }
+});
+
+// Verify the token payment and, only then, place the bid server-side.
+router.post("/verify-bid-payment", async (req, res) => {
+  try {
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature, businessId } = req.body;
+    const bidAmount = Number(req.body.bidAmount);
+
+    const expected = crypto
+      .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
+      .update(razorpay_order_id + "|" + razorpay_payment_id)
+      .digest("hex");
+    if (expected !== razorpay_signature) {
+      return res.status(400).json({ verified: false, error: "Payment verification failed" });
+    }
+
+    // Re-validate everything server-side (never trust the client between steps).
+    if (!req.user.canBuy) {
+      return res.status(403).json({ error: "Your account is not enabled to bid." });
+    }
+    if (!mongoose.Types.ObjectId.isValid(businessId) || !Number.isFinite(bidAmount)) {
+      return res.status(400).json({ error: "Invalid bid" });
+    }
+    const business = await Business.findById(businessId);
+    if (!business) return res.status(404).json({ error: "Business not found" });
+
+    const minBid = minBidForBusiness(business);
+    if (bidAmount < minBid) {
+      return res.status(400).json({ error: `Your bid must be at least ${minBid}` });
+    }
+
+    // Record the (non-refundable) token payment.
+    const token = tokenForBid(bidAmount);
+    try {
+      await Payment.create({
+        user: req.user._id,
+        business: businessId,
+        amount: token,
+        status: "success",
+        paymentId: razorpay_payment_id,
+      });
+    } catch (e) {
+      console.error("Failed to record token payment:", e.message);
+    }
+
+    // Place the bid — this only runs after the token payment is verified.
+    const bid = await Bid.create({
+      buyer: req.user._id,
+      business: businessId,
+      amount: bidAmount,
+      status: "pending",
+    });
+    business.highestBid = bidAmount;
+    business.highestBidder = req.user._id;
+    await business.save();
+
+    res.json({ verified: true, bid, highestBid: business.highestBid });
+  } catch (error) {
+    console.error("verify-bid-payment error:", error);
+    res.status(500).json({ error: error.message || "Verification failed" });
   }
 });
 
