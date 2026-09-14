@@ -7,6 +7,7 @@ const pendingUserSchema = new mongoose.Schema({
   otp: { type: String, required: true },
   expiresAt: { type: Date, required: true },
   role: { type: String, default: "user" },
+  phone: { type: String },
 });
 
 module.exports = mongoose.model("PendingUser", pendingUserSchema);

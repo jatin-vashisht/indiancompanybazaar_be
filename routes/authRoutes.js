@@ -108,7 +108,9 @@ const sendOtpEmail = require("../utils/sendEmailOtp");
 // 📧 Register with OTP
 // ====================
 router.post("/register", async (req, res) => {
-  const { name, email, password, role } = req.body;
+  const { name, email, password, role, phone, countryCode } = req.body;
+  // Combine country code + number into a single stored phone (e.g. "+919876543210").
+  const fullPhone = phone ? `${(countryCode || "").trim()}${String(phone).trim()}` : "";
 
   if (!name || !email || !password)
     return res.status(400).json({ error: "All fields are required" });
@@ -130,6 +132,7 @@ router.post("/register", async (req, res) => {
       otp,
       expiresAt,
       role: role || "user",
+      phone: fullPhone,
     });
 
     const sent = await sendOtpEmail(email, otp);
@@ -221,6 +224,7 @@ router.post("/verify-otp", async (req, res) => {
       role: pending.role,
       canBuy: caps.canBuy,
       canSell: caps.canSell,
+      phone: pending.phone || "",
       isVerified: true,
     });
 
@@ -353,14 +357,14 @@ router.post("/login", async (req, res) => {
 
 
 // Onboarding role selection. NOW AUTHENTICATED — it acts on the caller's own
-// account (never an email from the body) and refuses privileged roles, so it
-// can't be used to self-promote to admin/ca. buyer/seller only.
+// account (never an email from the body). Allows buyer/seller/ca (a CA can both
+// buy and sell); "admin" stays blocked so users can't self-promote to admin.
 router.post("/set-role", authenticate, async (req, res) => {
   try {
     const { role } = req.body;
-    const ALLOWED = ["buyer", "seller"];
+    const ALLOWED = ["buyer", "seller", "ca"];
     if (!role || !ALLOWED.includes(role)) {
-      return res.status(400).json({ error: "Role must be one of: buyer, seller" });
+      return res.status(400).json({ error: "Role must be one of: buyer, seller, ca" });
     }
 
     const caps = capsForRole(role);

@@ -1,7 +1,9 @@
+const crypto = require("crypto");
 const mongoose = require("mongoose");
 const Business = require("../models/Business");
 const Bid = require("../models/Bid");
 const Company = require("../models/Company");
+const companyIndex = require("../services/companyIndex");
 const { signBusinessDocuments } = require("../utils/s3");
 
 // Identity fields that must not leak to people who don't own the listing.
@@ -349,11 +351,11 @@ const toFrontendShape = (c, viewer) => {
   const base = {
     // Non-sensitive Mongo id used for routing to the detail page, so the CIN
     // never needs to appear in the URL. CIN itself is no longer returned.
-    id: c._id ? String(c._id) : "",
+    id: c.id || (c._id ? String(c._id) : ""),
     "Company Name": c.companyName || "",
-    "NIC Code": c.nicCode || "",
     "Company Registration Date": c.registrationDate || "",
     "Company Status": c.companyStatus || "",
+    "Listing Status": c.listingStatus || "",
     // Public on the cards + detail:
     "Company Industrial Classification": c.industrialClassification || "",
     "Company State Code": c.stateCode || "",
@@ -368,32 +370,66 @@ const toFrontendShape = (c, viewer) => {
   return base;
 };
 
+// Rich shape for the DETAIL page, built from the FULL scraped JSONL record
+// (CSV fields + tofler enrichment). Includes everything the "About the Company"
+// + "Directors & Signatories" sections show.
+const detailNum = (v) => {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(String(v).replace(/,/g, ""));
+  return Number.isFinite(n) ? n : null;
+};
+
+const toDetailShape = (r, viewer) => {
+  const cin = String(r.CIN || r.cin || "");
+  const regDate = r.date_of_incorporation || r.CompanyRegistrationdate_date || "";
+  const base = {
+    id: cin ? crypto.createHash("sha1").update(cin).digest("hex").slice(0, 16) : "",
+    "CIN": cin,
+    "Company Name": r.CompanyName || r.company_name || "",
+    "ROC": r.CompanyROCcode || r.roc || "",
+    "Registration Number": cin ? cin.slice(-6) : "",
+    "Date of Incorporation": regDate,
+    "Company Registration Date": regDate,
+    "Registered Office Address": r.registered_address || r.Registered_Office_Address || r.registered_office_address || "",
+    "Listing Status": r.listing_status || r.Listingstatus || "",
+    "Company Category": r.CompanyCategory || r.company_category || "",
+    "Company Sub Category": r.CompanySubCategory || r.company_sub_category || "",
+    "Company Status": r.status || r.CompanyStatus || "",
+    "Company Industrial Classification": r.industry || r.CompanyIndustrialClassification || r.nic_description || "",
+    "NIC Code": r.nic_code || "",
+    "Company State Code": r.CompanyStateCode || "",
+    "Last AGM Date": r.last_agm_date || "",
+    "Last Balance Sheet Date": r.last_balance_sheet_date || "",
+    "Email": r.email || "",
+    directors: Array.isArray(r.directors)
+      ? r.directors.map((d) => ({
+          name: d.director_name || d.name || "",
+          DIN: d.din || d.DIN || "",
+          role: d.designation || d.role || "",
+          tenure: d.tenure || "",
+        }))
+      : [],
+  };
+  // Auth-gated financials (frontend blurs for guests).
+  if (viewer) {
+    base["Company Class"] = r.company_class || r.CompanyClass || "";
+    base["Authorized Capital"] = detailNum(r.authorized_capital != null ? r.authorized_capital : r.AuthorizedCapital);
+    base["Paidup Capital"] = detailNum(r.paid_up_capital != null ? r.paid_up_capital : r.PaidupCapital);
+  }
+  return base;
+};
+
 const getCSVCompanies = async (req, res) => {
   try {
+    await companyIndex.ensureLoaded();
     const page = Math.max(1, parseInt(req.query.page || "1", 10) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || "20", 10) || 20));
     const search = (req.query.search || "").trim();
 
-    const filter = search
-      ? { companyName: { $regex: escapeRegex(search), $options: "i" } }
-      : {};
-
-    // estimatedDocumentCount is O(1) for the unfiltered case (~1M docs).
-    const total = search
-      ? await Company.countDocuments(filter)
-      : await Company.estimatedDocumentCount();
-
-    const totalPages = Math.ceil(total / limit);
-
-    // Sort by _id (default index) — there is no companyName index on the
-    // free tier, and sorting on an unindexed field over ~1M docs would fail.
-    const docs = await Company.find(filter)
-      .sort({ _id: 1 })
-      .skip((page - 1) * limit)
-      .limit(limit)
-      .lean();
-
-    const companies = docs.map((d) => toFrontendShape(d, req.user));
+    // Served from the in-memory index built off the scraped JSONL on S3
+    // (merged across every state folder). No MongoDB involved.
+    const { items, total, totalPages } = companyIndex.query({ page, limit, search });
+    const companies = items.map((d) => toFrontendShape(d, req.user));
 
     return res.json({
       success: true,
@@ -410,34 +446,36 @@ const getCSVCompanies = async (req, res) => {
   }
 };
 
-// GET /api/business/companies/:cin — fetch a single ROC company by CIN so the
+// GET /api/business/companies/:cin — fetch a single company by CIN so the
 // detail page works on direct load/refresh (not only via the list).
 const getCompanyByCin = async (req, res) => {
   try {
+    await companyIndex.ensureLoaded();
     const cin = decodeURIComponent(req.params.cin || "").trim();
     if (!cin) return res.status(400).json({ success: false, message: "CIN is required" });
 
-    const doc = await Company.findOne({ cin }).lean();
-    if (!doc) return res.status(404).json({ success: false, message: "Company not found" });
+    const full = await companyIndex.getFullByCin(cin);
+    if (!full) return res.status(404).json({ success: false, message: "Company not found" });
 
-    return res.json({ success: true, company: toFrontendShape(doc, req.user) });
+    return res.json({ success: true, company: toDetailShape(full, req.user) });
   } catch (err) {
     return res.status(500).json({ message: err.message });
   }
 };
 
-// GET /api/business/companies/id/:id — fetch a single ROC company by Mongo _id,
-// so the detail page can be reached without putting the CIN in the URL.
+// GET /api/business/companies/id/:id — fetch a single company by its opaque id
+// (a short hash of the CIN), so the detail page is reachable without putting
+// the CIN in the URL.
 const getCompanyById = async (req, res) => {
   try {
+    await companyIndex.ensureLoaded();
     const id = (req.params.id || "").trim();
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(400).json({ success: false, message: "Invalid company id" });
-    }
-    const doc = await Company.findById(id).lean();
-    if (!doc) return res.status(404).json({ success: false, message: "Company not found" });
+    if (!id) return res.status(400).json({ success: false, message: "Invalid company id" });
 
-    return res.json({ success: true, company: toFrontendShape(doc, req.user) });
+    const full = await companyIndex.getFullById(id);
+    if (!full) return res.status(404).json({ success: false, message: "Company not found" });
+
+    return res.json({ success: true, company: toDetailShape(full, req.user) });
   } catch (err) {
     return res.status(500).json({ message: err.message });
   }

@@ -60,10 +60,15 @@ app.get('/', (req, res) => res.send({ ok: true, message: 'Business marketplace b
 
 const PORT = process.env.PORT || 5000;
 
+const companyIndex = require('./services/companyIndex');
+
 mongoose.connect(process.env.MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
   .then(() => {
     console.log('Connected to MongoDB');
     app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
+    // Build the S3-backed All-Companies index in the background (loads the
+    // scraped JSONL from S3, refreshes periodically as new states are scraped).
+    companyIndex.start();
   })
   .catch(err => {
     console.error(err);
