@@ -1,12 +1,7 @@
-const nodemailer = require('nodemailer');
-
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.GMAIL_USER,
-    pass: process.env.GMAIL_APP_PASSWORD,
-  },
-});
+// Signup OTPs are delivered over Brevo's transactional email API so they leave
+// a verified kahemindia.com sender rather than a personal Gmail account. This
+// matches how the website contact form sends. Credentials come from env only.
+const BREVO_ENDPOINT = 'https://api.brevo.com/v3/smtp/email';
 
 const brandColor = '#0B1D3A';
 const accentColor = '#C8A455';
@@ -53,18 +48,58 @@ function otpTemplate(otp) {
 </html>`;
 }
 
+/**
+ * Sends the signup verification code.
+ * Returns true on success, false on failure — callers (POST /register and
+ * POST /resend-otp) branch on this, so the contract is unchanged from the
+ * previous nodemailer implementation.
+ */
 async function sendOtpEmail(email, otp) {
+  const apiKey = process.env.BREVO_API_KEY;
+  const senderEmail = process.env.BREVO_SENDER_EMAIL;
+
+  if (!apiKey || !senderEmail) {
+    console.error(
+      '[otp] Brevo is not configured — set BREVO_API_KEY and BREVO_SENDER_EMAIL.'
+    );
+    return false;
+  }
+
   try {
-    await transporter.sendMail({
-      from: `"Kahem India" <${process.env.GMAIL_USER}>`,
-      to: email,
-      subject: 'Your Kahem India verification code',
-      html: otpTemplate(otp),
+    const res = await fetch(BREVO_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'api-key': apiKey,
+        'Content-Type': 'application/json',
+        accept: 'application/json',
+      },
+      body: JSON.stringify({
+        sender: {
+          email: senderEmail,
+          name: process.env.BREVO_SENDER_NAME || 'Kahem India',
+        },
+        to: [{ email }],
+        subject: 'Your Kahem India verification code',
+        htmlContent: otpTemplate(otp),
+      }),
+      // Don't let a hung provider hold the signup request open indefinitely.
+      signal: AbortSignal.timeout(15000),
     });
+
+    if (!res.ok) {
+      // Log the provider's own reason — the previous implementation collapsed
+      // every failure into a bare false, which made outages undiagnosable.
+      const detail = await res.text().catch(() => '');
+      console.error(
+        `[otp] Brevo rejected the send to ${email}: ${res.status} ${detail.slice(0, 300)}`
+      );
+      return false;
+    }
+
     console.log(`OTP email sent to ${email}`);
     return true;
   } catch (error) {
-    console.error('Failed to send OTP email:', error.message);
+    console.error(`[otp] Failed to send OTP email to ${email}:`, error.message);
     return false;
   }
 }
