@@ -38,6 +38,28 @@ function minBidForBusiness(business) {
   return Math.max(starting, highest + 1);
 }
 
+// Whether a business can accept a new bid right now. Neither the order step
+// nor the verify step previously checked this, so a buyer could pay a
+// non-refundable token to bid on a listing the seller had withdrawn, or on an
+// auction that had already closed.
+function bidEligibility(business) {
+  if (business.isActive === false) {
+    return { ok: false, error: "This listing has been withdrawn by the seller and is no longer accepting bids." };
+  }
+  const auction = business.auctionDetails?.[0];
+  if (!auction) {
+    return { ok: false, error: "This listing has no active auction." };
+  }
+  const now = Date.now();
+  if (auction.startTime && now < new Date(auction.startTime).getTime()) {
+    return { ok: false, error: "This auction has not started yet." };
+  }
+  if (auction.endTime && now > new Date(auction.endTime).getTime()) {
+    return { ok: false, error: "This auction has already ended." };
+  }
+  return { ok: true };
+}
+
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_KEY_ID,
   key_secret: process.env.RAZORPAY_KEY_SECRET,
@@ -213,8 +235,11 @@ router.post("/create-bid-order", async (req, res) => {
       return res.status(400).json({ error: "Invalid bid amount" });
     }
 
-    const business = await Business.findById(businessId).select("auctionDetails highestBid");
+    const business = await Business.findById(businessId).select("auctionDetails highestBid isActive");
     if (!business) return res.status(404).json({ error: "Business not found" });
+
+    const eligible = bidEligibility(business);
+    if (!eligible.ok) return res.status(400).json({ error: eligible.error });
 
     const minBid = minBidForBusiness(business);
     if (bidAmount < minBid) {
@@ -260,6 +285,10 @@ router.post("/verify-bid-payment", async (req, res) => {
     }
     const business = await Business.findById(businessId);
     if (!business) return res.status(404).json({ error: "Business not found" });
+
+    // Re-checked here on purpose: the order and this call can be minutes apart.
+    const eligibleNow = bidEligibility(business);
+    if (!eligibleNow.ok) return res.status(400).json({ error: eligibleNow.error });
 
     const minBid = minBidForBusiness(business);
     if (bidAmount < minBid) {

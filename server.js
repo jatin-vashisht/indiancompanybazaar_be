@@ -23,8 +23,20 @@ if (process.env.CLIENT_ORIGIN && !allowedOrigins.includes(process.env.CLIENT_ORI
   allowedOrigins.push(process.env.CLIENT_ORIGIN);
 }
 
+// Outside production, accept any localhost port. The dev server does not
+// always get 3000 (another project may hold it), and a hardcoded port meant
+// the browser silently blocked login/signup with an opaque "network error".
+const isDevEnv = process.env.NODE_ENV !== "production";
+function corsOrigin(origin, callback) {
+  // Same-origin/non-browser callers (curl, health checks) send no Origin.
+  if (!origin) return callback(null, true);
+  if (allowedOrigins.includes(origin)) return callback(null, true);
+  if (isDevEnv && /^http:\/\/localhost:\d+$/.test(origin)) return callback(null, true);
+  return callback(new Error(`Origin not allowed by CORS: ${origin}`));
+}
+
 app.use(cors({
-  origin: allowedOrigins,
+  origin: corsOrigin,
   credentials: true, // required so the browser sends/receives the auth cookie
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
   allowedHeaders: ["Content-Type", "Authorization"]

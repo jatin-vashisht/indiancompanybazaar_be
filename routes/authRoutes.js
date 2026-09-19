@@ -114,6 +114,14 @@ router.post("/register", async (req, res) => {
   if (!name || !email || !password)
     return res.status(400).json({ error: "All fields are required" });
 
+  // Phone is capped at 10 digits. It is deliberately NOT unique — several
+  // accounts may share a number; only email is unique.
+  if (phone) {
+    const digits = String(phone).replace(/\D/g, "");
+    if (digits.length > 10)
+      return res.status(400).json({ error: "Phone number must be at most 10 digits" });
+  }
+
   try {
     const existingUser = await User.findOne({ email });
     if (existingUser)
@@ -437,25 +445,76 @@ router.put("/profile", authenticate, async (req, res) => {
   }
 });
 
-// Change password: verify the current one, then store a new bcrypt hash.
+// Change password, step 1: verify the current password, then email a code.
+// Nothing is committed here — the new hash is staged until the code is verified.
 router.post("/change-password", authenticate, async (req, res) => {
   try {
-    const { currentPassword, newPassword } = req.body;
+    const { currentPassword, newPassword, confirmPassword } = req.body;
     if (!currentPassword || !newPassword) {
       return res.status(400).json({ error: "Current and new password are required" });
     }
     if (String(newPassword).length < 8) {
       return res.status(400).json({ error: "New password must be at least 8 characters" });
     }
+    if (confirmPassword !== undefined && String(confirmPassword) !== String(newPassword)) {
+      return res.status(400).json({ error: "New password and confirmation do not match" });
+    }
+    if (String(newPassword) === String(currentPassword)) {
+      return res.status(400).json({ error: "New password must be different from the current one" });
+    }
+
     const user = await User.findById(req.user._id).select("+password");
     const ok = await bcrypt.compare(currentPassword, user.password);
     if (!ok) return res.status(400).json({ error: "Current password is incorrect" });
 
-    user.password = await bcrypt.hash(newPassword, 10);
+    const otp = String(Math.floor(100000 + Math.random() * 900000));
+    user.pendingPasswordHash = await bcrypt.hash(newPassword, 10);
+    user.pendingPasswordOtp = otp;
+    user.pendingPasswordOtpExpires = new Date(Date.now() + 5 * 60 * 1000);
     await user.save();
-    res.status(200).json({ message: "Password changed successfully" });
+
+    const sent = await sendOtpEmail(user.email, otp);
+    if (!sent) return res.status(500).json({ error: "Failed to send OTP" });
+
+    res.status(200).json({ message: "OTP sent to your email", email: user.email });
   } catch (err) {
     console.error("change-password error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Change password, step 2: confirm the emailed code and commit the new hash.
+router.post("/change-password/verify", authenticate, async (req, res) => {
+  try {
+    const { otp } = req.body;
+    if (!otp) return res.status(400).json({ error: "OTP is required" });
+
+    const user = await User.findById(req.user._id).select(
+      "+pendingPasswordHash +pendingPasswordOtp +pendingPasswordOtpExpires"
+    );
+    if (!user || !user.pendingPasswordHash || !user.pendingPasswordOtp) {
+      return res.status(400).json({ error: "No password change is pending" });
+    }
+    if (!user.pendingPasswordOtpExpires || user.pendingPasswordOtpExpires < new Date()) {
+      user.pendingPasswordHash = undefined;
+      user.pendingPasswordOtp = undefined;
+      user.pendingPasswordOtpExpires = undefined;
+      await user.save();
+      return res.status(400).json({ error: "OTP has expired. Please start again." });
+    }
+    if (String(otp).trim() !== String(user.pendingPasswordOtp)) {
+      return res.status(400).json({ error: "Incorrect OTP" });
+    }
+
+    user.password = user.pendingPasswordHash;
+    user.pendingPasswordHash = undefined;
+    user.pendingPasswordOtp = undefined;
+    user.pendingPasswordOtpExpires = undefined;
+    await user.save();
+
+    res.status(200).json({ message: "Password changed successfully" });
+  } catch (err) {
+    console.error("change-password/verify error:", err);
     res.status(500).json({ error: "Server error" });
   }
 });

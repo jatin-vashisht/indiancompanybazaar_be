@@ -6,6 +6,7 @@ const {
   getAllBusinesses,
   getBusinessById,
   deleteBusiness,
+  setBusinessActive,
   getCSVCompanies,
   getCompanyByCin,
   getCompanyById,
@@ -492,5 +493,8 @@ router.get("/:businessId", optionalAuth, getBusinessById);
  *         description: Server error
  */
 router.delete("/:businessId", authenticate, deleteBusiness);
+
+// Seller takes a listing off / back on the marketplace.
+router.patch("/:businessId/status", authenticate, setBusinessActive);
 
 module.exports = router;

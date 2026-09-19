@@ -53,7 +53,7 @@ const registerBusiness = async (req, res) => {
     const business = await Business.create({
       ...req.body,
       seller: req.user._id, // 👈 FIX: use seller instead of userId
-      verified: false,      // always false initially
+      verified: true,       // listings go live immediately (Browse filters on this)
     });
 
     // ✅ Return structured JSON response
@@ -103,7 +103,7 @@ const addAuctionDetails = async (req, res) => {
 
     // Ensure verified exists (default false)
     if (business.verified === undefined) {
-      business.verified = false;
+      business.verified = true;
     }
 
     // Save updated business
@@ -192,7 +192,7 @@ const getAllBusinesses = async (req, res) => {
   try {
     console.log("🔍 Fetching businesses for:", req.user?.role || "Public");
 
-    let filter = { verified: true }; // Default → only verified
+    let filter = { verified: true, isActive: { $ne: false } }; // verified + not taken down
 
     // Only ADMIN sees unverified listings here (CA no longer does — it was a
     // leak; verification happens through the admin routes).
@@ -512,6 +512,50 @@ const getBidsReceived = async (req, res) => {
   }
 };
 
+// Activate / deactivate a listing (seller-owned)
+const setBusinessActive = async (req, res) => {
+  try {
+    const { businessId } = req.params;
+    const { isActive } = req.body;
+
+    if (typeof isActive !== "boolean") {
+      return res.status(400).json({ message: "isActive must be a boolean" });
+    }
+
+    const business = await Business.findById(businessId);
+    if (!business) {
+      return res.status(404).json({ message: "Business not found" });
+    }
+    if (String(business.seller) !== String(req.user._id) && req.user.role !== "admin") {
+      return res.status(403).json({ message: "You can only change your own listing" });
+    }
+
+    business.isActive = isActive;
+    await business.save();
+
+    // Taking a listing down ends the auction for anyone mid-bid: bids still in
+    // play become "expired" so bidders see why they can no longer win. Bids
+    // that already resolved (accepted/won/paid/rejected/lost) are left alone.
+    let expiredBids = 0;
+    if (!isActive) {
+      const result = await Bid.updateMany(
+        { business: business._id, status: { $in: ["pending", "active"] } },
+        { $set: { status: "expired" } }
+      );
+      expiredBids = result.modifiedCount || 0;
+    }
+
+    res.json({
+      message: isActive ? "Listing activated" : "Listing deactivated",
+      business: { _id: business._id, isActive: business.isActive },
+      expiredBids,
+    });
+  } catch (error) {
+    console.error("Error updating listing status:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
 module.exports = {
   getCompanyByCin,
   getCompanyById,
@@ -524,4 +568,5 @@ module.exports = {
   getCSVCompanies,
   getMyBusinesses,
   getBidsReceived,
+  setBusinessActive,
 };

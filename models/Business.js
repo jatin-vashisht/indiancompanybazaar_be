@@ -94,6 +94,13 @@ const businessListingSchema = new mongoose.Schema(
     stakePercentage: { type: Number },
     closureTimeline: { type: String },
 
+    // Sellers can take a listing off the marketplace without deleting it.
+    // Deactivating expires any bids still open on it.
+    isActive: {
+      type: Boolean,
+      default: true,
+    },
+
     verified: {
     type: Boolean,
     default: false, // initially unverified

@@ -12,6 +12,13 @@ const userSchema = new mongoose.Schema({
   canSell: { type: Boolean, default: false },
   // Profile fields (collected post-signup via the Settings page).
   phone: { type: String },
+
+  // Staging area for an OTP-confirmed password change. The new hash is kept
+  // here until the emailed code is verified, so an attacker holding a live
+  // session still cannot change the password without inbox access.
+  pendingPasswordHash: { type: String, select: false },
+  pendingPasswordOtp: { type: String, select: false },
+  pendingPasswordOtpExpires: { type: Date, select: false },
   address: { type: String },
   isVerified: { type: Boolean, default: false },
   verificationToken: String
